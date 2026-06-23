@@ -5,10 +5,10 @@
 Implements the Electrostatic Transfer Matrix (ETM) method from  
 Cavalcante et al., [*Phys. Rev. B* **97**, 125427 (2018)](https://doi.org/10.1103/PhysRevB.97.125427).
 
-Computes V_eh(ρ) — the screened Coulomb potential between an electron and a hole
-in a stack of dielectric slabs (TMD heterostructures, van der Waals materials).
-Designed for **Quantum Monte Carlo** where V(ρ) is called millions of times per
-simulation: the fitted Chebyshev expansion evaluates in **~0.01 µs per call** —
+Computes V(ρ) — the screened Coulomb potential between two charge carriers
+in a stack of dielectric slabs (van der Waals materials).
+Designed for high-performance applications where V(ρ) is called millions of times per
+second: the fitted Chebyshev expansion evaluates in **~0.01 µs per call** —
 over **40,000× faster** than numerical integration.
 
 ---
@@ -113,7 +113,7 @@ int main(void)
     /* 4. Fit: "give me 0.5% accuracy on [0.1, rho_max] a₀" */
     FSCFit *V = fsc_fit_auto(ctx, 0.1, rho_max, 0.5, k_max, 1e-8);
 
-    /* 5. Evaluate in your QMC inner loop (~0.01 µs/call) */
+    /* 5. Evaluate in your high-performance application inner loop (~0.01 µs/call) */
     for (int step = 0; step < n_mc_steps; step++) {
         double rho = distance_between_particles(...);
         double Vij = fsc_fit_eval(V, rho);
@@ -208,7 +208,7 @@ FSCFit *fsc_fit_auto(const FSCContext *ctx,
 
 Automatically selects the Chebyshev degree to meet `target_err_pct`% error.
 Sweeps degrees 3, 5, 7, 9, 11, 15, 20, 25, 30 and returns the smallest-degree
-fit meeting the target. This is the **recommended entry point** for QMC.
+fit meeting the target.
 
 ```c
 FSCFit *fsc_fit_chebyshev(const FSCContext *ctx, int degree,
