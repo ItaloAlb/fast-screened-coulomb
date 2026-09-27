@@ -37,6 +37,63 @@ TEST(test_epsilon_N3_exact) {
     fsc_free(ctx);
 }
 
+/* ε(k) must stay exact at LARGE k, not just where the V(ρ) integral stops:
+ * a periodic (Ewald) sum needs 1/ε(k) to double precision out to k ~ 1e3.
+ * The transfer matrices used to multiply e^{+2kd} factors and cancel them
+ * again, so interlayer values went wrong (even negative) from k·z ≈ 20 and
+ * everything went NaN once k·d > ~709. */
+
+/* A uniform stack has no interfaces in effect: across layers the response
+ * is the bare propagation e^{-k z}, i.e. ε(k) = ε e^{k z}, exactly. */
+TEST(test_epsilon_indirect_uniform_large_k) {
+    printf("Slice 25: interlayer eps(k) stable at large k (uniform stack)\n");
+    double eps[] = {2.5, 2.5, 2.5, 2.5};
+    double d[]   = {-1.0, 1.0, 3.0};
+    FSCContext *ctx = fsc_create(4, eps, d, 2, 3, 2.0);
+    double ks[] = {1.0, 5.0, 9.0, 13.0, 15.0, 18.0, 30.0, 100.0};
+    for (int i = 0; i < 8; i++) {
+        char msg[64]; snprintf(msg, sizeof msg, "uniform interlayer eps at k=%g", ks[i]);
+        check_rel_err(fsc_epsilon_k(ctx, ks[i]), 2.5 * exp(2.0 * ks[i]), 1e-12, msg);
+    }
+    fsc_free(ctx);
+}
+
+/* A same-layer response tends to the source layer's own ε at large k (the
+ * charge only sees its immediate medium); it must get there, not overflow. */
+TEST(test_epsilon_direct_large_k) {
+    printf("Slice 26: direct eps(k) -> eps_c at large k, no overflow\n");
+    double eps[] = {1.0, 14.0, 14.0, 1.0};
+    double d[]   = {-3.0, 3.0, 9.0};
+    FSCContext *ctx = fsc_create(4, eps, d, 2, 0, 0.0);
+    double ks[] = {20.0, 100.0, 1000.0, 1e5};
+    for (int i = 0; i < 4; i++) {
+        char msg[64]; snprintf(msg, sizeof msg, "direct eps -> eps_c at k=%g", ks[i]);
+        check_rel_err(fsc_epsilon_k(ctx, ks[i]), 14.0, 1e-14, msg);
+    }
+    fsc_free(ctx);
+}
+
+/* Reciprocity: the electrostatic Green's function is symmetric, G(z,z') =
+ * G(z',z), so swapping source and observation layers must leave 1/ε(k)
+ * unchanged.  The library puts the origin at the SOURCE layer's centre, so
+ * the swapped stack is the same one shifted by -z.  Independent of how ε is
+ * computed; checked with contrast on both sides and out to large k. */
+TEST(test_epsilon_reciprocity) {
+    printf("Slice 27: interlayer eps(k) reciprocity (source <-> observation)\n");
+    double eps[] = {1.0, 5.0, 14.0, 2.0};
+    double d_a[] = {-0.5, 0.5, 1.5};   /* source layer 2 (centre 0), obs z = 1 */
+    double d_b[] = {-1.5, -0.5, 0.5};  /* source layer 3 (centre 0), obs z = -1 */
+    FSCContext *a = fsc_create(4, eps, d_a, 2, 3, 1.0);
+    FSCContext *b = fsc_create(4, eps, d_b, 3, 2, -1.0);
+    double ks[] = {0.01, 0.3, 2.0, 8.0, 15.0, 25.0};
+    for (int i = 0; i < 6; i++) {
+        char msg[64]; snprintf(msg, sizeof msg, "reciprocity at k=%g", ks[i]);
+        check_rel_err(1.0 / fsc_epsilon_k(a, ks[i]), 1.0 / fsc_epsilon_k(b, ks[i]),
+                      1e-12, msg);
+    }
+    fsc_free(a); fsc_free(b);
+}
+
 TEST(test_potential_hom) {
     printf("Slice 2a: V hom\n");
     double eps[]={5,5,5}; double d[]={-0.5,0.5};
@@ -816,6 +873,9 @@ TEST(test_auto_fit_reports_error) {
 int main(void) {
     printf("Fast Screened Coulomb — TDD Validation\n========================================\n\n");
     test_epsilon_N3_exact();
+    test_epsilon_indirect_uniform_large_k();
+    test_epsilon_direct_large_k();
+    test_epsilon_reciprocity();
     test_potential_hom();
     test_potential_bl();
     test_potential_ind();

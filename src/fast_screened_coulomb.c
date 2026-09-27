@@ -101,202 +101,153 @@ struct FSCFit {
 };
 
 /* ═════════════════════════════════════════════════════════════════════
- *  Utility: safe exponential
- * ═════════════════════════════════════════════════════════════════════ */
+ *  ε(k): generalized reflection coefficients (numerically stable ETM)
+ * ═════════════════════════════════════════════════════════════════════
+ *
+ * Same physics as the transfer-matrix Eqs. (4)–(7) of Cavalcante et al.,
+ * PRB 97, 125427 (2018), reorganised so that EVERY exponential decays.
+ *
+ * Why: the transfer-matrix products multiply factors e^{+2k d_n} and cancel
+ * them again later.  In double precision that cancellation loses everything
+ * once k·d ≳ 20 (interlayer values came out wrong by 10^10, even negative),
+ * and the raw exp(k d) overflows to NaN past k·d ≈ 709 — well inside the
+ * k range a periodic (Ewald) sum needs.
+ *
+ * ── Potential "waves" ──────────────────────────────────────────────────
+ * In each layer the Fourier-space potential is a sum of an up-going part
+ * e^{-kz} (decaying upward) and a down-going part e^{+kz}.  At an interface
+ * between ε_lo (below) and ε_hi (above), continuity of φ and of ε ∂φ/∂z gives
+ * the single-interface reflection of an up-going wave
+ *
+ *     r = (ε_lo − ε_hi)/(ε_lo + ε_hi)            (the image-charge factor),
+ *
+ * and −r for a down-going one.  Stacking a layer of thickness t on top turns
+ * that into the generalized reflection
+ *
+ *     R = (r + R' e^{−2kt}) / (1 + r R' e^{−2kt}),
+ *
+ * R' being the generalized reflection at the far side of that layer — the
+ * standard recursion for layered media (e.g. Chew, "Waves and Fields in
+ * Inhomogeneous Media", §2.1), here for the static (Laplace) case.
+ *
+ * ── Source layer ───────────────────────────────────────────────────────
+ * Unit source at z = 0 in layer c, bounded by z_l < 0 < z_u:
+ *     φ_c(z) = e^{−k|z|} + A e^{kz} + B e^{−kz}      (all over ε_c)
+ * Reflection at z_u and z_l: A e^{k z_u} = R_u (1 + B) e^{−k z_u} and
+ * B e^{−k z_l} = R_d (1 + A) e^{k z_l}.  With U = R_u e^{−2k z_u}, D = R_d e^{2k z_l}
+ * (both ≤ 1 in magnitude, decaying):
+ *     A = U (1 + D)/(1 − U D),    B = D (1 + U)/(1 − U D).
+ *
+ * ── Carrying φ into another layer ──────────────────────────────────────
+ * Going up into layer n (bottom z_a, top z_b, R' its generalized reflection
+ * at z_b, t = z_b − z_a), the potential at z_a fixes the up-going amplitude
+ * P = φ(z_a)/(1 + R' e^{−2kt}), and inside the layer
+ *     φ(z) = P [ e^{−k(z − z_a)} + R' e^{−k(2 z_b − z_a − z)} ],
+ * both exponents ≤ 0.  Going down is the mirror image.
+ *
+ * ε_{t,c}(k) = ε_c / φ(z_t).  At large k every R e^{−2kt} underflows to 0, so
+ * ε → ε_c for a same-layer pair and 1/ε → 0 (as e^{−k|z_t|}) across layers:
+ * the right limits, reached without ever forming a large number. */
 
-static double safe_exp(double x)
+/* Generalized reflection of an UP-going wave at interface j (between layer j
+ * below and j+1 above), 1-based j in [1, N-1], seen from layer j. */
+static double reflect_up(const FSCContext *ctx, double k, int j)
 {
-    if (x > 500.0) return HUGE_VAL;
-    if (x < -500.0) return 0.0;
-    return exp(x);
+    const int N = ctx->n_layers;
+    double R = 0.0;                      /* nothing above the top interface */
+    for (int i = N - 1; i >= j; i--) {
+        const double lo = ctx->epsilons[i - 1], hi = ctx->epsilons[i];
+        const double r  = (lo - hi) / (lo + hi);
+        /* layer i+1 lies between interfaces i and i+1 (absent for i = N-1) */
+        const double x  = (i < N - 1)
+                          ? R * exp(-2.0 * k * (ctx->d[i] - ctx->d[i - 1])) : 0.0;
+        R = (r + x) / (1.0 + r * x);
+    }
+    return R;
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- *  2×2 matrix helpers
- * ═════════════════════════════════════════════════════════════════════ */
-
-/* C = A * B, all row-major: [0]=m11, [1]=m12, [2]=m21, [3]=m22 */
-static void mat22_mul(double C[4], const double A[4], const double B[4])
+/* Generalized reflection of a DOWN-going wave at interface j, seen from
+ * layer j+1. */
+static double reflect_down(const FSCContext *ctx, double k, int j)
 {
-    double c0 = A[0]*B[0] + A[1]*B[2];
-    double c1 = A[0]*B[1] + A[1]*B[3];
-    double c2 = A[2]*B[0] + A[3]*B[2];
-    double c3 = A[2]*B[1] + A[3]*B[3];
-    C[0] = c0; C[1] = c1; C[2] = c2; C[3] = c3;
+    double R = 0.0;                      /* nothing below the bottom interface */
+    for (int i = 1; i <= j; i++) {
+        const double lo = ctx->epsilons[i - 1], hi = ctx->epsilons[i];
+        const double r  = (hi - lo) / (lo + hi);
+        /* layer i lies between interfaces i-1 and i (absent for i = 1) */
+        const double x  = (i > 1)
+                          ? R * exp(-2.0 * k * (ctx->d[i - 1] - ctx->d[i - 2])) : 0.0;
+        R = (r + x) / (1.0 + r * x);
+    }
+    return R;
 }
-
-/* Solve 2×2 system  A·x = b  via Cramer's rule.
- * A is row-major [a11,a12; a21,a22], b is [b1,b2], x is output [x1,x2]. */
-static int solve22(double x[2], const double A[4], const double b[2])
-{
-    double det = A[0]*A[3] - A[1]*A[2];
-    if (fabs(det) < 1e-30) return -1;
-    x[0] = (b[0]*A[3] - A[1]*b[1]) / det;
-    x[1] = (A[0]*b[1] - b[0]*A[2]) / det;
-    return 0;
-}
-
-/* ═════════════════════════════════════════════════════════════════════
- *  Transfer-matrix core (Eqs. 4–7 of the paper)
- * ═════════════════════════════════════════════════════════════════════ */
-
-/* T_n matrix at interface n  (Eq. 5).  Row-major output. */
-static void T_matrix(double T[4], double k, double dn,
-                     double eps_lo, double eps_hi)
-{
-    double a = (eps_hi + eps_lo) / (2.0 * eps_hi);
-    double b = (eps_hi - eps_lo) / (2.0 * eps_hi);
-    double arg = 2.0 * k * dn;
-    double em2kd = safe_exp(-arg);
-    double e2kd  = safe_exp(arg);
-    T[0] = a;          T[1] = b * em2kd;
-    T[2] = b * e2kd;   T[3] = a;
-}
-
-/* M_bar_n matrix  (Eq. 5, left side) */
-static void M_bar(double M[4], double k, double dn, double eps_lo)
-{
-    double ekd  = exp(k * dn);
-    double emkd = 1.0 / ekd;
-    M[0] = ekd;            M[1] = emkd;
-    M[2] = eps_lo * ekd;   M[3] = -eps_lo * emkd;
-}
-
-/* M_n^{-1}  (analytic inverse, Eq. 5 right side) */
-static void M_inv(double Mi[4], double k, double dn, double eps_hi)
-{
-    double emkd = exp(-k * dn);
-    double ekd  = 1.0 / emkd;
-    Mi[0] = 0.5 * emkd;         Mi[1] =  0.5 * emkd / eps_hi;
-    Mi[2] = 0.5 * ekd;          Mi[3] = -0.5 * ekd  / eps_hi;
-}
-
-/* Compute A_t(k), B_t(k) — potential coefficients at layer t
- * for a source charge in layer c.  Eqs. (4)–(7). */
-static void compute_coefficients(const FSCContext *ctx, double k,
-                                 double *At_out, double *Bt_out)
-{
-    int N = ctx->n_layers;
-    int c = ctx->c;
-    int t = ctx->t;
-    const double *epsilons = ctx->epsilons;
-    const double *d = ctx->d;
-    double eps_c = ctx->eps_c;
-
-    /* Single layer (N=1): homogeneous medium, no interfaces */
-    if (N == 1) {
-        *At_out = 0.0;
-        *Bt_out = 0.0;
-        return;
-    }
-
-    /* M = T_{N-1} … T_1  */
-    double M[4] = {1.0, 0.0, 0.0, 1.0};
-    for (int n = N - 1; n >= 1; n--) {
-        double Tn[4];
-        T_matrix(Tn, k, d[n-1], epsilons[n-1], epsilons[n]);
-        double tmp[4];
-        mat22_mul(tmp, M, Tn);
-        memcpy(M, tmp, sizeof(M));
-    }
-
-    /* M' = T_{N-1} … T_c · M_{c-1}^{-1} */
-    double Mp[4] = {1.0, 0.0, 0.0, 1.0};
-    for (int n = N - 1; n >= c; n--) {
-        double Tn[4];
-        T_matrix(Tn, k, d[n-1], epsilons[n-1], epsilons[n]);
-        double tmp[4];
-        mat22_mul(tmp, Mp, Tn);
-        memcpy(Mp, tmp, sizeof(Mp));
-    }
-    {
-        double Mic[4];
-        M_inv(Mic, k, d[c-2], epsilons[c-1]);
-        double tmp[4];
-        mat22_mul(tmp, Mp, Mic);
-        memcpy(Mp, tmp, sizeof(Mp));
-    }
-
-    /* M'' = T_{N-1} … T_{c+1} · M_c^{-1} */
-    double Mpp[4] = {1.0, 0.0, 0.0, 1.0};
-    for (int n = N - 1; n >= c + 1; n--) {
-        double Tn[4];
-        T_matrix(Tn, k, d[n-1], epsilons[n-1], epsilons[n]);
-        double tmp[4];
-        mat22_mul(tmp, Mpp, Tn);
-        memcpy(Mpp, tmp, sizeof(Mpp));
-    }
-    {
-        double Mic[4];
-        M_inv(Mic, k, d[c-1], epsilons[c]);
-        double tmp[4];
-        mat22_mul(tmp, Mpp, Mic);
-        memcpy(Mpp, tmp, sizeof(Mpp));
-    }
-
-    /* A₁ from Eq. (7) */
-    double ek_dcm1 = exp(k * d[c-2]);
-    double emk_dc  = exp(-k * d[c-1]);
-    double term1 = (Mp[0] + eps_c * Mp[1]) * ek_dcm1;
-    double term2 = (Mpp[0] - Mpp[1] * eps_c) * emk_dc;
-    double A1 = (term1 - term2) / M[0];
-
-    /* propagate (A₁, B₁=0) → (A_t, B_t) via Eq. (4) */
-    double coeffs[2] = {A1, 0.0};
-
-    for (int n = 1; n < t; n++) {
-        double delta1[2] = {0.0, 0.0};
-        if (n == c - 1) {
-            double ek = exp(k * d[c-2]);
-            delta1[0] = ek;
-            delta1[1] = eps_c * ek;
-        }
-
-        double delta2[2] = {0.0, 0.0};
-        if (n == c) {
-            double emk = exp(-k * d[c-1]);
-            delta2[0] = emk;
-            delta2[1] = -eps_c * emk;
-        }
-
-        /* rhs = M_bar_n · coeffs - delta1 + delta2 */
-        double MB[4];
-        M_bar(MB, k, d[n-1], epsilons[n-1]);
-        double rhs[2];
-        rhs[0] = MB[0]*coeffs[0] + MB[1]*coeffs[1] - delta1[0] + delta2[0];
-        rhs[1] = MB[2]*coeffs[0] + MB[3]*coeffs[1] - delta1[1] + delta2[1];
-
-        /* solve M_n · coeffs_new = rhs */
-        double dn_val = d[n-1];
-        double ekd  = exp(k * dn_val);
-        double emkd = 1.0 / ekd;
-        double eps_next = epsilons[n];
-        double Mn[4] = {ekd, emkd, eps_next * ekd, -eps_next * emkd};
-
-        double newc[2] = {0.0, 0.0};
-        solve22(newc, Mn, rhs);
-        coeffs[0] = newc[0];
-        coeffs[1] = newc[1];
-    }
-
-    *At_out = coeffs[0];
-    *Bt_out = coeffs[1];
-}
-
-/* ═════════════════════════════════════════════════════════════════════
- *  Public: ε(k)
- * ═════════════════════════════════════════════════════════════════════ */
 
 double fsc_epsilon_k(const FSCContext *ctx, double k)
 {
     if (k < 1e-15) k = 1e-15;
 
-    double At, Bt;
-    compute_coefficients(ctx, k, &At, &Bt);
+    const int    N = ctx->n_layers, c = ctx->c, t = ctx->t;
+    const double *d = ctx->d;
+    if (N == 1) return ctx->eps_c;
 
-    double delta_tc = (ctx->t == ctx->c) ? 1.0 : 0.0;
-    double denom = At * exp(k * ctx->z_t) + Bt * exp(-k * ctx->z_t) + delta_tc;
-    return ctx->eps_c / denom;
+    /* Source layer: its bounding interfaces and the reflections off them. */
+    const int    has_up = c < N, has_dn = c > 1;
+    const double z_u = has_up ? d[c - 1] : 0.0;
+    const double z_l = has_dn ? d[c - 2] : 0.0;
+    const double Ru  = has_up ? reflect_up(ctx, k, c) : 0.0;
+    const double Rd  = has_dn ? reflect_down(ctx, k, c - 1) : 0.0;
+    const double U   = has_up ? Ru * exp(-2.0 * k * z_u) : 0.0;
+    const double D   = has_dn ? Rd * exp(2.0 * k * z_l) : 0.0;
+    const double den = 1.0 - U * D;
+    const double A   = U * (1.0 + D) / den;
+    const double B   = D * (1.0 + U) / den;
+
+    double phi;
+    if (t == c) {
+        /* e^{kz} and e^{-kz} are bounded by the reflections that multiply
+         * them: A e^{kz} = U(...) e^{k z}, U carrying e^{-2k z_u}. */
+        const double z = ctx->z_t;
+        phi = exp(-k * fabs(z)) + A * exp(k * z) + B * exp(-k * z);
+    } else if (t > c) {
+        /* φ at the top of the source layer, then up through layers c+1..t. */
+        double phi_a = (1.0 + B) * exp(-k * z_u) * (1.0 + Ru);
+        phi = 0.0;
+        for (int n = c + 1; n <= t; n++) {
+            const double za   = d[n - 2];
+            const int    top  = n < N;
+            const double zb   = top ? d[n - 1] : 0.0;
+            const double Rp   = top ? reflect_up(ctx, k, n) : 0.0;
+            const double e2t  = top ? exp(-2.0 * k * (zb - za)) : 0.0;
+            const double P    = phi_a / (1.0 + Rp * e2t);
+            if (n == t) {
+                const double z = ctx->z_t;
+                phi = P * (exp(-k * (z - za)) +
+                           (top ? Rp * exp(-k * (2.0 * zb - za - z)) : 0.0));
+            } else {
+                phi_a = P * exp(-k * (zb - za)) * (1.0 + Rp);
+            }
+        }
+    } else {
+        /* Mirror: φ at the bottom of the source layer, then down. */
+        double phi_b = (1.0 + A) * exp(k * z_l) * (1.0 + Rd);
+        phi = 0.0;
+        for (int n = c - 1; n >= t; n--) {
+            const double zb   = d[n - 1];
+            const int    bot  = n > 1;
+            const double za   = bot ? d[n - 2] : 0.0;
+            const double Rp   = bot ? reflect_down(ctx, k, n - 1) : 0.0;
+            const double e2t  = bot ? exp(-2.0 * k * (zb - za)) : 0.0;
+            const double P    = phi_b / (1.0 + Rp * e2t);
+            if (n == t) {
+                const double z = ctx->z_t;
+                phi = P * (exp(k * (z - zb)) +
+                           (bot ? Rp * exp(-k * (z - 2.0 * za + zb)) : 0.0));
+            } else {
+                phi_b = P * exp(-k * (zb - za)) * (1.0 + Rp);
+            }
+        }
+    }
+    return ctx->eps_c / phi;
 }
 
 /* ═════════════════════════════════════════════════════════════════════
