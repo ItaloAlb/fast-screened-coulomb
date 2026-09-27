@@ -33,3 +33,5 @@ Thumbs.db
 *.pdf
 *.txt
 *.log
+*.py
+*.png
