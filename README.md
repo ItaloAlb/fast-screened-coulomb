@@ -1,6 +1,6 @@
 # Fast Screened Coulomb
 
-**C library for screened electron–hole interaction potentials in layered dielectric systems.**
+**C library for screenede interaction potentials in layered dielectric systems.**
 
 Implements the Electrostatic Transfer Matrix (ETM) method from  
 Cavalcante et al., [*Phys. Rev. B* **97**, 125427 (2018)](https://doi.org/10.1103/PhysRevB.97.125427).
@@ -8,7 +8,7 @@ Cavalcante et al., [*Phys. Rev. B* **97**, 125427 (2018)](https://doi.org/10.110
 Computes V(ρ) — the screened Coulomb potential between two charge carriers
 in a stack of dielectric slabs (van der Waals materials).
 Designed for high-performance applications where V(ρ) is called millions of times per
-second: the fitted Chebyshev expansion evaluates in **~0.01 µs per call** —
+second. We found that fitted Chebyshev expansion evaluates in **~0.01 µs per call** —
 over **40,000× faster** than numerical integration.
 
 ---
@@ -62,9 +62,6 @@ README.md                    This file
 ## Dependencies
 
 **None.** C99 standard library only (`<math.h>`, `<stdlib.h>`, `<string.h>`).
-No BLAS, LAPACK, GSL, or other external libraries required. The Bessel function
-J₀ is provided by a portable rational approximation — the system `j0()` is not
-needed.
 
 ---
 
@@ -156,7 +153,7 @@ double fsc_epsilon_k(const FSCContext *ctx, double k);
 
 Returns ε(k) — the effective dielectric function (Eq. 3 of the paper).
 
-### Automatic parameter search
+### Parameter searcher
 
 ```c
 void fsc_optimal_params(const FSCContext *ctx,
@@ -197,7 +194,7 @@ integral. Speed: ~0.4 ms/call. Use for generating reference data or debugging.
 | `k_max` | 20.0 (direct), 5.0 (indirect) | Upper integration cutoff (a₀⁻¹) |
 | `tol` | 1e-8 | Integration tolerance |
 
-### Fast evaluation (recommended for QMC)
+### Fast evaluation
 
 ```c
 FSCFit *fsc_fit_auto(const FSCContext *ctx,
