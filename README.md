@@ -1,6 +1,6 @@
 # Fast Screened Coulomb
 
-**C library for screenede interaction potentials in layered dielectric systems.**
+**C library for screened interaction potentials in layered dielectric systems.**
 
 Implements the Electrostatic Transfer Matrix (ETM) method from  
 Cavalcante et al., [*Phys. Rev. B* **97**, 125427 (2018)](https://doi.org/10.1103/PhysRevB.97.125427).
