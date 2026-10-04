@@ -182,6 +182,23 @@ double fsc_fit_eval(const FSCFit *fit, double rho);
 void   fsc_fit_eval_array(const FSCFit *fit, const double *rhos, int n,
                           double *V_out);
 
+/* Exact ordinary first derivative of the represented fit, in Ry/a0.
+ * This differentiates the approximation, not the underlying ETM integral.
+ * All current fit methods are supported; NULL/unknown fits have no capability.
+ * Invalid rho (nonfinite or <= 0) or unsupported fit returns NAN. Numerical
+ * poles/overflow may also produce nonfinite output; consumers must check it.
+ * No fit-band clamp is imposed here. B-spline S(rho)/rho has a constant
+ * numerator at/outside its endpoints, hence dV/drho = -S/rho^2 there;
+ * at endpoint kinks this selects the existing constant-numerator branch.
+ * Scalar/array calls are read-only, allocation-free, and safe on shared fits.
+ * Array requires valid buffers for n > 0; rhos and dV_out may be identical.
+ */
+#define FSC_FIT_DERIVATIVE_API 1
+int    fsc_fit_supports_d1(const FSCFit *fit);
+double fsc_fit_d1(const FSCFit *fit, double rho);
+void   fsc_fit_d1_array(const FSCFit *fit, const double *rhos, int n,
+                       double *dV_out);
+
 /* ── Inspect a fit ── */
 FSCMethod   fsc_fit_method(const FSCFit *fit);
 int         fsc_fit_n_params(const FSCFit *fit);

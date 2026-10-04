@@ -1683,3 +1683,115 @@ void fsc_free(FSCContext *ctx)
     free(ctx->d);
     free(ctx);
 }
+
+/* Ordinary derivatives of the existing fit evaluators. Differentiate their
+ * recurrences (including de Boor's regularizer), leaving all value code intact.
+ * Polynomial fits use V=S(x(rho))/rho with dx/drho=2/(rho*log(max/min)).
+ * Thus V'=(2*S_x/log(max/min)-S)/rho^2. No new physical approximation.
+ */
+int fsc_fit_supports_d1(const FSCFit *fit)
+{
+    if (!fit) return 0;
+    switch (fit->method) {
+    case FSC_METHOD_PADE:
+    case FSC_METHOD_CHEBYSHEV:
+    case FSC_METHOD_LEGENDRE:
+    case FSC_METHOD_IMAGE_CHARGES:
+    case FSC_METHOD_BSPLINE:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static double polynomial_fit_d1(const FSCFit *fit, double rho)
+{
+    const double x = rho_to_x_log(rho, fit->rho_min, fit->rho_max);
+    double sum = fit->param[0], sum_d1 = 0.0;
+    double prev = 1.0, current = x, prev_d1 = 0.0, current_d1 = 1.0;
+    if (fit->n_params > 1) {
+        sum += fit->param[1] * current;
+        sum_d1 += fit->param[1];
+    }
+    for (int j = 2; j < fit->n_params; ++j) {
+        double next, next_d1;
+        if (fit->method == FSC_METHOD_CHEBYSHEV) {
+            next = 2.0 * x * current - prev;
+            next_d1 = 2.0 * (current + x * current_d1) - prev_d1;
+        } else {
+            next = ((2*j-1) * x * current - (j-1) * prev) / j;
+            next_d1 = ((2*j-1) * (current + x * current_d1) -
+                       (j-1) * prev_d1) / j;
+        }
+        sum += fit->param[j] * next;
+        sum_d1 += fit->param[j] * next_d1;
+        prev = current; current = next;
+        prev_d1 = current_d1; current_d1 = next_d1;
+    }
+    return ((2.0 / log(fit->rho_max / fit->rho_min)) * sum_d1 - sum) / rho / rho;
+}
+
+static double bspline_fit_d1(const FSCFit *fit, double rho)
+{
+    const int order = fit->order, n_ctrl = fit->n_params;
+    const double *knots = fit->knots;
+    if (rho <= knots[0]) return -fit->param[0] / rho / rho;
+    if (rho >= knots[n_ctrl + order - 1]) return -fit->param[n_ctrl-1] / rho / rho;
+    const int i = bspline_find_interval(rho, knots, n_ctrl + order, order);
+    double value[10], derivative[10]; /* [order], same bound as value de Boor */
+    for (int j = 0; j < order; ++j) {
+        value[j] = fit->param[i-order+1+j];
+        derivative[j] = 0.0;
+    }
+    for (int r = 1; r < order; ++r)
+        for (int j = order-1; j >= r; --j) {
+            const int idx = i-order+1+j;
+            const double denom = knots[idx+order-r] - knots[idx] + 1e-30;
+            const double alpha = (rho-knots[idx]) / denom;
+            derivative[j] = (1.0-alpha)*derivative[j-1] + alpha*derivative[j] +
+                            (value[j]-value[j-1]) / denom;
+            value[j] = (1.0-alpha)*value[j-1] + alpha*value[j];
+        }
+    return (derivative[order-1] - value[order-1]/rho) / rho;
+}
+
+double fsc_fit_d1(const FSCFit *fit, double rho)
+{
+    if (!fsc_fit_supports_d1(fit) || !isfinite(rho) || rho <= 0.0) return NAN;
+    switch (fit->method) {
+    case FSC_METHOD_CHEBYSHEV:
+    case FSC_METHOD_LEGENDRE:
+        return polynomial_fit_d1(fit, rho);
+    case FSC_METHOD_BSPLINE:
+        return bspline_fit_d1(fit, rho);
+    case FSC_METHOD_PADE: {
+        const int m = fit->order, n = fit->extra;
+        double num = 0.0, den = 0.0, num_d1 = 0.0, den_d1 = 0.0;
+        for (int i = 0; i <= m; ++i) {
+            num += fit->param[i] * pow(rho, i);
+            if (i > 0) num_d1 += i * fit->param[i] * pow(rho, i-1);
+        }
+        for (int j = 0; j < n; ++j) {
+            den += fit->param[m+1+j] * pow(rho, j+1);
+            den_d1 += (j+1) * fit->param[m+1+j] * pow(rho, j);
+        }
+        /* Quotient rule without forming den^2. Poles remain nonfinite. */
+        return (num_d1 - (num/den)*den_d1) / den;
+    }
+    case FSC_METHOD_IMAGE_CHARGES: {
+        double derivative = 0.0;
+        for (int i = 0; i < fit->n_params; ++i) {
+            const double radius = hypot(rho, fit->knots[i]);
+            derivative -= (fit->param[i]/radius) / radius * (rho/radius);
+        }
+        return derivative;
+    }
+    default:
+        return NAN;
+    }
+}
+
+void fsc_fit_d1_array(const FSCFit *fit, const double *rhos, int n, double *dV_out)
+{
+    for (int i = 0; i < n; ++i) dV_out[i] = fsc_fit_d1(fit, rhos[i]);
+}
