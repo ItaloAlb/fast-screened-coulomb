@@ -14,8 +14,9 @@ HEADER   = src/fast_screened_coulomb.h
 
 all: test
 
-test: tests/test_fsc
+test: tests/test_fsc tests/test_fsc_controlled
 	./tests/test_fsc
+	./tests/test_fsc_controlled
 
 bench: tests/benchmark_fsc
 	./tests/benchmark_fsc
@@ -23,8 +24,11 @@ bench: tests/benchmark_fsc
 tests/test_fsc: tests/test_fsc.c $(SRC) $(HEADER)
 	$(CC) $(CFLAGS) -o $@ tests/test_fsc.c $(SRC) $(LDFLAGS)
 
+tests/test_fsc_controlled: tests/test_fsc_controlled.c $(SRC) $(HEADER)
+	$(CC) $(CFLAGS) -o $@ tests/test_fsc_controlled.c $(SRC) $(LDFLAGS)
+
 tests/benchmark_fsc: tests/benchmark_fsc.c $(SRC) $(HEADER)
 	$(CC) $(CFLAGS) -o $@ tests/benchmark_fsc.c $(SRC) $(LDFLAGS)
 
 clean:
-	-rm -f tests/test_fsc tests/benchmark_fsc tests/test_fsc.exe tests/benchmark_fsc.exe
+	-rm -f tests/test_fsc tests/benchmark_fsc tests/test_fsc.exe tests/benchmark_fsc.exe tests/test_fsc_controlled tests/test_fsc_controlled.exe

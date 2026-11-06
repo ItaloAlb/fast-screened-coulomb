@@ -376,3 +376,49 @@ adaptive quadrature). The TDD test suite (`test_fsc.c`) passes 135/135 tests:
 
 Provided as-is for research use. See the paper reference above for the
 underlying method.
+
+
+## Controlled value and force fitting
+
+Use `fsc_fit_controlled` when ordinary radial derivatives need physical
+accuracy as well as consistency with the represented scalar. The legacy five
+fit methods and `fsc_fit_auto` remain available unchanged; their value-only
+selection does not guarantee force accuracy or meeting the requested target.
+
+The additive API preserves `2/(eps_source*hypot(rho,z))` analytically and fits
+the smooth Fourier-Bessel remainder with cubic Hermite pieces in `log(rho)`.
+Moment slopes come from `-2 integral k J1(k rho) h(k) dk`, rather than scalar
+finite differences. Composite Gauss-Legendre panels resolve both oscillatory
+phase and dielectric structure, then halve panel widths and double the cutoff
+to check reference stability. Native POSIX J0/J1 (Windows `_j0`/`_j1`) are used
+on this route. Values and first derivatives have C1 joins; C2 is not promised.
+
+`value_target_pct` and `force_target_pct` are separate percent inputs. Each
+accepted piece is checked at seven off-node radii against refined moments,
+using half of each target as the interpolation budget and 1% of the smaller
+target for each reference discrepancy. `FSCAccuracy` reports sampled value,
+force, panel-refinement and cutoff-extension discrepancies separately. These
+are observed numerical checks, not rigorous global or roundoff bounds.
+
+The fit returns NULL on invalid input, unresolved accuracy or resource limits;
+there is no best-effort fallback. Setup is bounded by 4096 pieces, 65536
+reference points, 262144 quadrature panels per moment, four cutoff attempts,
+four panel refinements and depth 20. Fits are immutable, context-independent
+after construction, and allocation-free in scalar evaluation. The raw API
+returns NAN outside its configured positive radial band. Caller-imposed
+clamps, many-body sampling bias, and fermionic statistics are separate issues.
+
+This API admits finite interior source slabs with the charge at zero strictly
+inside the source layer, positive finite dielectric constants and ordered
+finite interfaces. The observer is at zero in the source layer or strictly
+inside another layer at nonzero z. Uniform single media are also supported.
+Other geometries or force zeros unresolved by relative-error checks fail
+explicitly. `fsc_reference` exposes the refined physical moments and
+`fsc_controlled_boundary` permits inspecting join radii.
+
+`make test` also runs independent direct/interlayer uniform and slab
+image-charge sweeps from rho=0.01 to 1333. More extensive Alea tests use a
+separate electrostatic boundary-value solve, refined Simpson integration,
+join finite differences, independent force targets, guards, clone/crowd and
+PIMC metadata contracts. No universal accuracy, speed or virial admission
+follows from those finite fixtures.

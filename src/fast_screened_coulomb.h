@@ -1,4 +1,4 @@
-﻿/* fast_screened_coulomb.h — Fast Screened Coulomb C library
+/* fast_screened_coulomb.h — Fast Screened Coulomb C library
  *
  * Electrostatic Transfer Matrix (ETM) method for screened electron-hole
  * interaction potentials in layered dielectric systems.
@@ -198,6 +198,43 @@ int    fsc_fit_supports_d1(const FSCFit *fit);
 double fsc_fit_d1(const FSCFit *fit, double rho);
 void   fsc_fit_d1_array(const FSCFit *fit, const double *rhos, int n,
                        double *dV_out);
+
+/* Additive API: legacy five fit methods are unchanged. All energies are Ry.
+ * Numerical estimates are sampled refinement discrepancies, not global bounds.
+ * V=2/(eps_c hypot(rho,z))+g, g=2 int J0(krho) h(k) dk,
+ * g'=-2 int k J1(krho) h(k) dk; h=1/eps(k)-exp(-k|z|)/eps_c.
+ * Cavalcante et al., PRB 97, 125427 (2018), Eq. (3).
+ */
+#define FSC_CONTROLLED_FIT_API 1
+typedef struct FSCControlledFit FSCControlledFit;
+typedef struct {
+    double value_error_pct, force_error_pct;
+    double quadrature_value_pct, quadrature_force_pct;
+    double cutoff_value_pct, cutoff_force_pct;
+    int segments, reference_points;
+    int status; /* 0 success, 1 invalid input, 2 numerical/resource limit */
+} FSCAccuracy;
+
+/* Independent value/force targets in percent; no best-effort fallback.
+ * Returns NULL on failure with accuracy.status set. Checks each Hermite piece
+ * at seven off-node points against refined Fourier-Bessel moments. C1 joins;
+ * the two targets bound observed discrepancies only, excluding radial clamps.
+ * Immutable, allocation-free evaluation; fit and context never retained together.
+ */
+FSCControlledFit *fsc_fit_controlled(const FSCContext *ctx, double rho_min,
+    double rho_max, double value_target_pct, double force_target_pct,
+    FSCAccuracy *accuracy);
+double fsc_controlled_eval(const FSCControlledFit *fit, double rho);
+double fsc_controlled_d1(const FSCControlledFit *fit, double rho);
+/* Inspect join radii (indices 0..accuracy.segments); invalid index returns NAN. */
+double fsc_controlled_boundary(const FSCControlledFit *fit, int index);
+void fsc_controlled_free(FSCControlledFit *fit);
+
+/* Refined physical reference, not an evaluation/difference of a fitted scalar.
+ * Each moment must stabilize under panel refinement and cutoff extension.
+ */
+int fsc_reference(const FSCContext *ctx, double rho, double target_pct,
+    double *value, double *d1, FSCAccuracy *accuracy);
 
 /* ── Inspect a fit ── */
 FSCMethod   fsc_fit_method(const FSCFit *fit);

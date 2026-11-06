@@ -1795,3 +1795,286 @@ void fsc_fit_d1_array(const FSCFit *fit, const double *rhos, int n, double *dV_o
 {
     for (int i = 0; i < n; ++i) dV_out[i] = fsc_fit_d1(fit, rhos[i]);
 }
+
+
+/* Controlled smooth-remainder fit. This is additive: legacy fits remain intact.
+ * Composite GL16 panels resolve the oscillatory phase before refinement;
+ * long-double sums reduce cancellation in the force moment. Native J0/J1
+ * replace the legacy ~1e-8 rational approximation on this accuracy route.
+ * Cubic Hermite interpolation (NIST DLMF 3.3) uses exact moment slopes in
+ * log(rho), separating interpolation error from quadrature/cutoff estimates.
+ */
+#include <float.h>
+
+#ifdef _WIN32
+#define controlled_j0 _j0
+#define controlled_j1 _j1
+#else
+/* POSIX functions; explicit declarations also support strict C99 builds. */
+extern double j0(double);
+extern double j1(double);
+#define controlled_j0 j0
+#define controlled_j1 j1
+#endif
+
+#define FSC_CONTROLLED_MAX_SEGMENTS 4096
+#define FSC_CONTROLLED_MAX_PANELS 262144
+
+typedef struct { double x, value, slope; } FSCNode; /* log(rho), g, rho*g' */
+struct FSCControlledFit {
+    double coefficient, z, rho_min, rho_max;
+    int count;
+    FSCNode *nodes; /* [count], ordered log radii; shared read-only */
+};
+
+static int controlled_geometry(const FSCContext *ctx, double *length, int *uniform)
+{
+    int i;
+    if (!ctx || ctx->c < 1 || ctx->c > ctx->n_layers ||
+        ctx->t < 1 || ctx->t > ctx->n_layers || !isfinite(ctx->z_t)) return 0;
+    *uniform = 1;
+    *length = HUGE_VAL;
+    for (i=0; i<ctx->n_layers; ++i) {
+        if (!isfinite(ctx->epsilons[i]) || ctx->epsilons[i]<=0.0) return 0;
+        if (ctx->epsilons[i]!=ctx->eps_c) *uniform=0;
+        /* Interface reflection divides by eps_lo+eps_hi. Overflow would turn
+         * a real dielectric contrast into zero without producing a NaN. */
+        if (i && ctx->epsilons[i]>DBL_MAX-ctx->epsilons[i-1]) return 0;
+    }
+    for (i=0; i<ctx->n_layers-1; ++i)
+        if (!isfinite(ctx->d[i]) || (i && ctx->d[i]<=ctx->d[i-1])) return 0;
+    if (ctx->n_layers>1) {
+        if (ctx->c==1 || ctx->c==ctx->n_layers ||
+            !(ctx->d[ctx->c-2]<0.0 && ctx->d[ctx->c-1]>0.0)) return 0;
+        *length=2.0*fmin(-ctx->d[ctx->c-2],ctx->d[ctx->c-1]);
+        if (ctx->t!=ctx->c) {
+            const double lower=ctx->t>1 ? ctx->d[ctx->t-2] : -HUGE_VAL;
+            const double upper=ctx->t<ctx->n_layers ? ctx->d[ctx->t-1] : HUGE_VAL;
+            if (!(lower<ctx->z_t && ctx->z_t<upper) || ctx->z_t==0.0) return 0;
+        } else if (ctx->z_t!=0.0) return 0; /* same-layer displaced charges unsupported */
+        if (ctx->t!=ctx->c) *length=fmin(*length,fabs(ctx->z_t));
+    } else if (ctx->z_t!=0.0) return 0;
+    return *uniform || (isfinite(*length) && *length>0.0);
+}
+
+static void controlled_base(double coefficient, double z, double rho,
+                            double *value, double *slope)
+{
+    const double radius=hypot(rho,z);
+    *value=coefficient/radius;
+    *slope=-(*value/radius)*(rho/radius);
+}
+
+/* Integrate only the smooth remainder on [0,K]. Phase width is <= phase;
+ * GL16 also resolves dielectric structure; both panel widths refine together.
+ * An explicit work limit prevents a silent recursion-depth fallback. */
+static int controlled_moments(const FSCContext *ctx, double rho, double K,
+    double length, double phase, double *value, double *slope)
+{
+    static const double x[8]={.095012509837637440185,.28160355077925891323,
+        .45801677765722738634,.61787624440264374845,.7554044083550030339,
+        .86563120238783174388,.94457502307323257608,.9894009349916499326};
+    static const double w[8]={.18945061045506849629,.18260341504492358887,
+        .16915651939500253819,.14959598881657673208,.12462897125553387205,
+        .09515851168249278481,.062253523938647892863,.027152459411754094852};
+    const double width=fmin(phase/rho,phase/(6.2831853071795864769*length));
+    const double panels=ceil(K/width);
+    long double sum=0.0L, derivative=0.0L;
+    int p,j,s,n;
+    if (!isfinite(panels) || panels<1.0 || panels>FSC_CONTROLLED_MAX_PANELS) return 0;
+    n=(int)panels;
+    for (p=0; p<n; ++p) {
+        const double half=0.5*K/n, mid=(p+0.5)*K/n;
+        for (j=0; j<8; ++j) for (s=-1; s<=1; s+=2) {
+            const double k=mid+s*half*x[j];
+            const double ek=fsc_epsilon_k(ctx,k);
+            const double baseline=exp(-k*fabs(ctx->z_t))/ctx->eps_c;
+            const double h=1.0/ek-baseline;
+            const double weight=2.0*half*w[j]*h;
+            if (isnan(ek) || ek<=0.0 || !isfinite(weight)) return 0;
+            sum+=(long double)weight*controlled_j0(k*rho);
+            derivative-=(long double)weight*k*controlled_j1(k*rho);
+        }
+    }
+    *value=(double)sum; *slope=(double)derivative;
+    return isfinite(*value) && isfinite(*slope);
+}
+
+static int controlled_reference(const FSCContext *ctx, double rho, double target_pct,
+    double *value, double *slope, double *g, double *g1, FSCAccuracy *accuracy)
+{
+    double length,base,base_d1,K;
+    int uniform,cut,refine;
+    if (!value || !slope || !accuracy) return 0;
+    memset(accuracy,0,sizeof(*accuracy)); accuracy->status=1;
+    if (!isfinite(rho) || rho<=0.0 || !isfinite(target_pct) || target_pct<=0.0 ||
+        !controlled_geometry(ctx,&length,&uniform)) return 0;
+    controlled_base(2.0/ctx->eps_c,fabs(ctx->z_t),rho,&base,&base_d1);
+    if (!isfinite(base) || !isfinite(base_d1) || base==0.0 || base_d1==0.0) return 0;
+    if (uniform) {
+        *value=base; *slope=base_d1; *g=0.0; *g1=0.0;
+        accuracy->status=0; accuracy->reference_points=1; return 1;
+    }
+    /* Exponential image envelope; doubling below checks this initial cutoff.
+     * This is an observed tail refinement, not an analytic uniform bound. */
+    K=24.0/length;
+    accuracy->status=2;
+    for (cut=0; cut<4; ++cut,K*=2.0) {
+        double phase=6.2831853071795864769;
+        for (refine=0; refine<4; ++refine,phase*=0.5) {
+            double coarse,coarse_d1,fine,fine_d1,extended,extended_d1;
+            double vscale,fscale,qv,qf,tv,tf;
+            if (!controlled_moments(ctx,rho,K,length,phase,&coarse,&coarse_d1) ||
+                !controlled_moments(ctx,rho,K,length,phase*0.5,&fine,&fine_d1) ||
+                !controlled_moments(ctx,rho,2*K,length,phase*0.5,&extended,&extended_d1)) return 0;
+            *value=base+extended; *slope=base_d1+extended_d1;
+            vscale=fabs(*value); fscale=fabs(*slope);
+            if (!isfinite(vscale) || !isfinite(fscale) || vscale==0.0 || fscale==0.0) return 0;
+            qv=100*fabs(fine-coarse)/vscale; qf=100*fabs(fine_d1-coarse_d1)/fscale;
+            tv=100*fabs(extended-fine)/vscale; tf=100*fabs(extended_d1-fine_d1)/fscale;
+            accuracy->quadrature_value_pct=qv; accuracy->quadrature_force_pct=qf;
+            accuracy->cutoff_value_pct=tv; accuracy->cutoff_force_pct=tf;
+            if (qv<=target_pct && qf<=target_pct && tv<=target_pct && tf<=target_pct) {
+                *g=extended; *g1=extended_d1;
+                accuracy->status=0; accuracy->reference_points=1; return 1;
+            }
+            if (tv>target_pct || tf>target_pct) break;
+        }
+    }
+    return 0;
+}
+
+int fsc_reference(const FSCContext *ctx, double rho, double target_pct,
+    double *value, double *d1, FSCAccuracy *accuracy)
+{
+    double g,g1;
+    return controlled_reference(ctx,rho,target_pct,value,d1,&g,&g1,accuracy);
+}
+
+static void controlled_piece(FSCNode a,FSCNode b,double x,double *value,double *dx)
+{
+    const double width=b.x-a.x, t=(x-a.x)/width;
+    /* Difference form avoids subtracting nearly equal endpoint values in d/dx. */
+    const double difference=b.value-a.value;
+    const double c=3*difference-width*(2*a.slope+b.slope);
+    const double d=-2*difference+width*(a.slope+b.slope);
+    *value=a.value+t*(width*a.slope+t*(c+t*d));
+    *dx=a.slope+t*(2*c+3*t*d)/width;
+}
+
+typedef struct {
+    const FSCContext *ctx;
+    FSCControlledFit *fit;
+    FSCAccuracy *accuracy;
+    double value_target,force_target,reference_target;
+} FSCFitBuilder;
+
+static int controlled_node(FSCFitBuilder *b,double x,FSCNode *node,
+                            double *value,double *d1)
+{
+    FSCAccuracy current;
+    double g,g1;
+    if (++b->accuracy->reference_points>65536 ||
+        !controlled_reference(b->ctx,exp(x),b->reference_target,value,d1,&g,&g1,&current)) return 0;
+    node->x=x; node->value=g; node->slope=exp(x)*g1;
+    b->accuracy->quadrature_value_pct=fmax(b->accuracy->quadrature_value_pct,current.quadrature_value_pct);
+    b->accuracy->quadrature_force_pct=fmax(b->accuracy->quadrature_force_pct,current.quadrature_force_pct);
+    b->accuracy->cutoff_value_pct=fmax(b->accuracy->cutoff_value_pct,current.cutoff_value_pct);
+    b->accuracy->cutoff_force_pct=fmax(b->accuracy->cutoff_force_pct,current.cutoff_force_pct);
+    return 1;
+}
+
+static int controlled_interval(FSCFitBuilder *b,FSCNode a,FSCNode z,int depth)
+{
+    int point,accepted=1;
+    double max_v=0.0,max_f=0.0;
+    FSCNode middle={0,0,0};
+    for (point=1; point<8; ++point) {
+        FSCNode node;
+        double v,d1,g,dx,base,base_d1,ev,ef;
+        const double x=a.x+(z.x-a.x)*point/8.0, rho=exp(x);
+        if (!controlled_node(b,x,&node,&v,&d1)) return 0;
+        if (point==4) middle=node;
+        controlled_piece(a,z,x,&g,&dx);
+        controlled_base(b->fit->coefficient,b->fit->z,rho,&base,&base_d1);
+        ev=100*fabs(base+g-v)/fabs(v);
+        ef=100*fabs(base_d1+dx/rho-d1)/fabs(d1);
+        if (!isfinite(ev) || !isfinite(ef)) return 0;
+        max_v=fmax(max_v,ev); max_f=fmax(max_f,ef);
+        if (ev>b->value_target || ef>b->force_target) accepted=0;
+    }
+    if (!accepted) {
+        if (depth>=20 || middle.x==a.x || middle.x==z.x) return 0;
+        return controlled_interval(b,a,middle,depth+1) && controlled_interval(b,middle,z,depth+1);
+    }
+    if (b->fit->count>FSC_CONTROLLED_MAX_SEGMENTS) return 0;
+    b->fit->nodes[b->fit->count++]=z;
+    b->accuracy->value_error_pct=fmax(b->accuracy->value_error_pct,max_v);
+    b->accuracy->force_error_pct=fmax(b->accuracy->force_error_pct,max_f);
+    return 1;
+}
+
+FSCControlledFit *fsc_fit_controlled(const FSCContext *ctx,double rho_min,
+    double rho_max,double value_target_pct,double force_target_pct,FSCAccuracy *accuracy)
+{
+    FSCControlledFit *fit;
+    FSCFitBuilder builder;
+    FSCNode first,last;
+    double value,d1,length;
+    int uniform;
+    if (!accuracy) return NULL;
+    memset(accuracy,0,sizeof(*accuracy)); accuracy->status=1;
+    if (!isfinite(rho_min) || !isfinite(rho_max) || rho_min<=0.0 || rho_max<=rho_min ||
+        !isfinite(value_target_pct) || !isfinite(force_target_pct) ||
+        value_target_pct<=0.0 || force_target_pct<=0.0 ||
+        !controlled_geometry(ctx,&length,&uniform)) return NULL;
+    fit=calloc(1,sizeof(*fit));
+    if (!fit) { accuracy->status=2; return NULL; }
+    fit->nodes=malloc((FSC_CONTROLLED_MAX_SEGMENTS+1)*sizeof(FSCNode));
+    if (!fit->nodes) { free(fit); accuracy->status=2; return NULL; }
+    fit->coefficient=2.0/ctx->eps_c; fit->z=fabs(ctx->z_t);
+    fit->rho_min=rho_min; fit->rho_max=rho_max;
+    builder.ctx=ctx; builder.fit=fit; builder.accuracy=accuracy;
+    /* Reserve half the targets for off-grid error and reference estimates. */
+    builder.value_target=0.5*value_target_pct; builder.force_target=0.5*force_target_pct;
+    builder.reference_target=0.01*fmin(value_target_pct,force_target_pct);
+    accuracy->status=2;
+    if (!controlled_node(&builder,log(rho_min),&first,&value,&d1) ||
+        !controlled_node(&builder,log(rho_max),&last,&value,&d1)) {
+        fsc_controlled_free(fit); return NULL;
+    }
+    fit->nodes[0]=first; fit->count=1;
+    if (!controlled_interval(&builder,first,last,0)) {
+        fsc_controlled_free(fit); return NULL;
+    }
+    accuracy->segments=fit->count-1; accuracy->status=0;
+    return fit;
+}
+
+static int controlled_find(const FSCControlledFit *fit,double x)
+{
+    int lo=0,hi=fit->count-1;
+    while (hi-lo>1) { const int mid=(lo+hi)/2; if (x<fit->nodes[mid].x) hi=mid; else lo=mid; }
+    return lo;
+}
+
+static double controlled_evaluate(const FSCControlledFit *fit,double rho,int derivative)
+{
+    double g,dx,base,base_d1,x;
+    int index;
+    if (!fit || !isfinite(rho) || rho<fit->rho_min || rho>fit->rho_max) return NAN;
+    x=log(rho); index=controlled_find(fit,x);
+    controlled_piece(fit->nodes[index],fit->nodes[index+1],x,&g,&dx);
+    controlled_base(fit->coefficient,fit->z,rho,&base,&base_d1);
+    return derivative ? base_d1+dx/rho : base+g;
+}
+
+double fsc_controlled_eval(const FSCControlledFit *fit,double rho) { return controlled_evaluate(fit,rho,0); }
+double fsc_controlled_d1(const FSCControlledFit *fit,double rho) { return controlled_evaluate(fit,rho,1); }
+double fsc_controlled_boundary(const FSCControlledFit *fit,int index) {
+    if (!fit || index<0 || index>=fit->count) return NAN;
+    if (index==0) return fit->rho_min;
+    if (index==fit->count-1) return fit->rho_max;
+    return exp(fit->nodes[index].x);
+}
+void fsc_controlled_free(FSCControlledFit *fit) { if (fit) { free(fit->nodes); free(fit); } }

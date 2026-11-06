@@ -35,3 +35,6 @@ Thumbs.db
 *.log
 *.py
 *.png
+
+# Controlled fitting test executable
+tests/test_fsc_controlled
