@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Fast Screened Coulomb — C Library
 # Usage: make test    (run TDD validation suite)
 #        make bench   (run expansion benchmark)

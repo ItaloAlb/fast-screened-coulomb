@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /* Independent uniform/slab image-charge accuracy checks in Rydberg units.
  * Compile and run with make test; no fitted scalar is used as a reference.
  * Image lengths follow electrostatic reflection at a slab's two interfaces.

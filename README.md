@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Fast Screened Coulomb
 
 **C library for screened interaction potentials in layered dielectric systems.**
@@ -41,31 +46,13 @@ constant of the source layer). For **indirect excitons** (different layers),
 
 ---
 
-## Files
+## Installation
 
-```
-src/
-  fast_screened_coulomb.h    Public API (C, callable from C++/Fortran)
-  fast_screened_coulomb.c    Full implementation
-  main.py                    Python reference implementation
-tests/
-  test_fsc.c                 TDD validation suite (135 tests)
-  benchmark_fsc.c            CLI tool comparing all expansion methods
-  _timing_full.py            Python timing comparison
-  _timing_test.py            Python timing benchmarks
-Makefile                     Build
-README.md                    This file
-```
-
----
-
-## Dependencies
+### Dependencies
 
 **None.** C99 standard library only (`<math.h>`, `<stdlib.h>`, `<string.h>`).
 
----
-
-## Compilation
+### Building and testing
 
 ```sh
 # Library + test suite
@@ -81,7 +68,8 @@ make test
 make bench
 ```
 
-To use in your own project:
+### Using the library in your project
+
 ```sh
 gcc -std=c99 -O2 -c src/fast_screened_coulomb.c
 gcc -std=c99 -O2 your_qmc.c fast_screened_coulomb.o -lm
@@ -126,7 +114,42 @@ int main(void)
 
 ---
 
+## Files
+
+```
+src/
+  fast_screened_coulomb.h    Public API (C, callable from C++/Fortran)
+  fast_screened_coulomb.c    Full implementation
+  main.py                    Python reference implementation
+tests/
+  test_fsc.c                 Validation suite (168 checks)
+  test_fsc_controlled.c      Controlled fits against an independent image-charge sum
+  benchmark_fsc.c            CLI tool comparing all expansion methods
+docs/
+  releasing.md               Versioning policy and release procedure
+Makefile                     Build
+CHANGELOG.md                 Changes per version
+CITATION.cff                 How to cite this software
+AUTHORS                      Copyright holders and contributors
+LICENSE, LICENSES/           GNU General Public License v3.0 or later
+README.md                    This file
+```
+
+---
+
 ## API reference
+
+### Version
+
+```c
+#define FSC_VERSION_MAJOR 0
+#define FSC_VERSION_MINOR 1
+#define FSC_VERSION_PATCH 0
+#define FSC_VERSION "0.1.0"
+```
+
+Record `FSC_VERSION` with your results to know which library version produced
+them.
 
 ### Lifecycle
 
@@ -244,6 +267,21 @@ void   fsc_fit_eval_array(const FSCFit *fit, const double *rhos, int n,
 `fsc_fit_eval` is thread-safe (read-only on the fit object, no global state,
 zero allocation). Safe to call from OpenMP-parallel loops.
 
+### Derivative of a fit
+
+```c
+int    fsc_fit_supports_d1(const FSCFit *fit);
+double fsc_fit_d1(const FSCFit *fit, double rho);
+void   fsc_fit_d1_array(const FSCFit *fit, const double *rhos, int n,
+                        double *dV_out);
+```
+
+Exact ordinary first derivative of the represented fit, in Ry/a₀. It
+differentiates the approximation, not the underlying ETM integral; use the
+controlled fits below when the derivative itself must be physically accurate.
+Invalid ρ (nonfinite or ≤ 0) or an unsupported fit returns NAN. The calls are
+read-only, allocation-free and safe on shared fits.
+
 ### Inspecting a fit
 
 ```c
@@ -252,6 +290,63 @@ int         fsc_fit_n_params(const FSCFit *fit);
 const char *fsc_fit_label(const FSCFit *fit);
 void        fsc_fit_free(FSCFit *fit);
 ```
+
+### Controlled value and force fitting
+
+```c
+FSCControlledFit *fsc_fit_controlled(const FSCContext *ctx, double rho_min,
+    double rho_max, double value_target_pct, double force_target_pct,
+    FSCAccuracy *accuracy);
+double fsc_controlled_eval(const FSCControlledFit *fit, double rho);
+double fsc_controlled_d1(const FSCControlledFit *fit, double rho);
+double fsc_controlled_boundary(const FSCControlledFit *fit, int index);
+void   fsc_controlled_free(FSCControlledFit *fit);
+int    fsc_reference(const FSCContext *ctx, double rho, double target_pct,
+                     double *value, double *d1, FSCAccuracy *accuracy);
+```
+
+Use `fsc_fit_controlled` when ordinary radial derivatives need physical
+accuracy as well as consistency with the represented scalar. The legacy five
+fit methods and `fsc_fit_auto` remain available unchanged; their value-only
+selection does not guarantee force accuracy or meeting the requested target.
+
+The additive API preserves `2/(eps_source*hypot(rho,z))` analytically and fits
+the smooth Fourier-Bessel remainder with cubic Hermite pieces in `log(rho)`.
+Moment slopes come from `-2 integral k J1(k rho) h(k) dk`, rather than scalar
+finite differences. Composite Gauss-Legendre panels resolve both oscillatory
+phase and dielectric structure, then halve panel widths and double the cutoff
+to check reference stability. Native POSIX J0/J1 (Windows `_j0`/`_j1`) are used
+on this route. Values and first derivatives have C1 joins; C2 is not promised.
+
+`value_target_pct` and `force_target_pct` are separate percent inputs. Each
+accepted piece is checked at seven off-node radii against refined moments,
+using half of each target as the interpolation budget and 1% of the smaller
+target for each reference discrepancy. `FSCAccuracy` reports sampled value,
+force, panel-refinement and cutoff-extension discrepancies separately. These
+are observed numerical checks, not rigorous global or roundoff bounds.
+
+The fit returns NULL on invalid input, unresolved accuracy or resource limits;
+there is no best-effort fallback. Setup is bounded by 4096 pieces, 65536
+reference points, 262144 quadrature panels per moment, four cutoff attempts,
+four panel refinements and depth 20. Fits are immutable, context-independent
+after construction, and allocation-free in scalar evaluation. The raw API
+returns NAN outside its configured positive radial band. Caller-imposed
+clamps, many-body sampling bias, and fermionic statistics are separate issues.
+
+This API admits finite interior source slabs with the charge at zero strictly
+inside the source layer, positive finite dielectric constants and ordered
+finite interfaces. The observer is at zero in the source layer or strictly
+inside another layer at nonzero z. Uniform single media are also supported.
+Other geometries or force zeros unresolved by relative-error checks fail
+explicitly. `fsc_reference` exposes the refined physical moments and
+`fsc_controlled_boundary` permits inspecting join radii.
+
+`make test` also runs independent direct/interlayer uniform and slab
+image-charge sweeps from rho=0.01 to 1333. More extensive Alea tests use a
+separate electrostatic boundary-value solve, refined Simpson integration,
+join finite differences, independent force targets, guards, clone/crowd and
+PIMC metadata contracts. No universal accuracy, speed or virial admission
+follows from those finite fixtures.
 
 ### Benchmark
 
@@ -324,7 +419,9 @@ for (int i = 0; i < N; i++) {
 ## Validation
 
 The library is verified against the Python reference implementation (SciPy
-adaptive quadrature). The TDD test suite (`test_fsc.c`) passes 135/135 tests:
+adaptive quadrature). The test suite `test_fsc.c` runs 168 checks, and
+`test_fsc_controlled.c` compares the controlled fits with an independent
+image-charge sum:
 
 | Test | Checks | Tolerance |
 |------|--------|-----------|
@@ -346,6 +443,7 @@ adaptive quadrature). The TDD test suite (`test_fsc.c`) passes 135/135 tests:
 | **Convergence sweep (4 diverse systems)** | 12 (ρ, system) pairs | 50× tol vs reference |
 | **V(ρ) plateau vs k_max** | 3 ρ × 9 k_max values | error flatlines past k_envelope |
 | **Adaptive GK vs dense Simpson** | 4 ρ-values, same k_max | 0.2% cross-method agreement |
+| **Controlled fits vs image charges** | 3 stacks × direct/interlayer, 513 ρ-points on [0.01, 1333] | 1e-4 relative, value and force |
 
 ---
 
@@ -355,6 +453,37 @@ adaptive quadrature). The TDD test suite (`test_fsc.c`) passes 135/135 tests:
 - **N = 1** (homogeneous medium): ε(k) = ε_c, V(ρ) = 2/(ε_c·ρ)
 - **High dielectric contrast** (ε ratios up to 100): safe — exponentials capped
   at exp(±500) to prevent float64 overflow
+
+---
+
+## Testing
+
+```sh
+make test
+```
+
+builds and runs `test_fsc` (it prints `N / N passed`) and
+`test_fsc_controlled` (it exits with status 0 when every system meets its
+targets). The same command runs in continuous integration on every push to
+`main`.
+
+---
+
+## Versioning
+
+Fast Screened Coulomb follows [Semantic Versioning](https://semver.org); the
+public interface is the header `src/fast_screened_coulomb.h`.
+[CHANGELOG.md](CHANGELOG.md) lists the changes of each version and
+[docs/releasing.md](docs/releasing.md) describes the policy and the release
+procedure.
+
+---
+
+## Citing
+
+If you use Fast Screened Coulomb in published work, please cite it as
+described in [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository"
+button reads it), and cite Cavalcante et al. (2018) for the method.
 
 ---
 
@@ -374,51 +503,15 @@ adaptive quadrature). The TDD test suite (`test_fsc.c`) passes 135/135 tests:
 
 ## License
 
-Provided as-is for research use. See the paper reference above for the
-underlying method.
+Fast Screened Coulomb is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. It is distributed in the hope that it will be useful, but
+without any warranty. See [LICENSE](LICENSE).
 
+---
 
-## Controlled value and force fitting
+## Acknowledgements
 
-Use `fsc_fit_controlled` when ordinary radial derivatives need physical
-accuracy as well as consistency with the represented scalar. The legacy five
-fit methods and `fsc_fit_auto` remain available unchanged; their value-only
-selection does not guarantee force accuracy or meeting the requested target.
-
-The additive API preserves `2/(eps_source*hypot(rho,z))` analytically and fits
-the smooth Fourier-Bessel remainder with cubic Hermite pieces in `log(rho)`.
-Moment slopes come from `-2 integral k J1(k rho) h(k) dk`, rather than scalar
-finite differences. Composite Gauss-Legendre panels resolve both oscillatory
-phase and dielectric structure, then halve panel widths and double the cutoff
-to check reference stability. Native POSIX J0/J1 (Windows `_j0`/`_j1`) are used
-on this route. Values and first derivatives have C1 joins; C2 is not promised.
-
-`value_target_pct` and `force_target_pct` are separate percent inputs. Each
-accepted piece is checked at seven off-node radii against refined moments,
-using half of each target as the interpolation budget and 1% of the smaller
-target for each reference discrepancy. `FSCAccuracy` reports sampled value,
-force, panel-refinement and cutoff-extension discrepancies separately. These
-are observed numerical checks, not rigorous global or roundoff bounds.
-
-The fit returns NULL on invalid input, unresolved accuracy or resource limits;
-there is no best-effort fallback. Setup is bounded by 4096 pieces, 65536
-reference points, 262144 quadrature panels per moment, four cutoff attempts,
-four panel refinements and depth 20. Fits are immutable, context-independent
-after construction, and allocation-free in scalar evaluation. The raw API
-returns NAN outside its configured positive radial band. Caller-imposed
-clamps, many-body sampling bias, and fermionic statistics are separate issues.
-
-This API admits finite interior source slabs with the charge at zero strictly
-inside the source layer, positive finite dielectric constants and ordered
-finite interfaces. The observer is at zero in the source layer or strictly
-inside another layer at nonzero z. Uniform single media are also supported.
-Other geometries or force zeros unresolved by relative-error checks fail
-explicitly. `fsc_reference` exposes the refined physical moments and
-`fsc_controlled_boundary` permits inspecting join radii.
-
-`make test` also runs independent direct/interlayer uniform and slab
-image-charge sweeps from rho=0.01 to 1333. More extensive Alea tests use a
-separate electrostatic boundary-value solve, refined Simpson integration,
-join finite differences, independent force targets, guards, clone/crowd and
-PIMC metadata contracts. No universal accuracy, speed or virial admission
-follows from those finite fixtures.
+This study was financed in part by the Coordenação de Aperfeiçoamento de
+Pessoal de Nível Superior – Brasil (CAPES) – Finance Code 001.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Build outputs
 *.o
 *.obj
@@ -9,12 +12,14 @@
 *.dll
 *.dylib
 tests/test_fsc
+tests/test_fsc_controlled
 tests/benchmark_fsc
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # IDE / Editor
 .vscode/
@@ -27,14 +32,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Claude
-.claude/
-
+# Local material that is not part of the library: papers, plots, logs and
+# scripts kept at the top level of a working copy.
 *.pdf
-*.txt
-*.log
-*.py
 *.png
-
-# Controlled fitting test executable
-tests/test_fsc_controlled
+*.log
+/*.py

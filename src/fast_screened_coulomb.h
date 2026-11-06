@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /* fast_screened_coulomb.h — Fast Screened Coulomb C library
  *
  * Electrostatic Transfer Matrix (ETM) method for screened electron-hole
@@ -12,6 +18,13 @@
 
 #ifndef FAST_SCREENED_COULOMB_H
 #define FAST_SCREENED_COULOMB_H
+
+/* Library version, following Semantic Versioning. These macros are the single
+ * source of the version; docs/releasing.md describes how it changes. */
+#define FSC_VERSION_MAJOR 0
+#define FSC_VERSION_MINOR 1
+#define FSC_VERSION_PATCH 0
+#define FSC_VERSION "0.1.0"
 
 #ifdef __cplusplus
 extern "C" {

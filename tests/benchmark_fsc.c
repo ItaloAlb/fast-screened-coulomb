@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /* benchmark_fsc.c — CLI tool reproducing Python fit_benchmark() output */
 #include "fast_screened_coulomb.h"
 #include <stdio.h>

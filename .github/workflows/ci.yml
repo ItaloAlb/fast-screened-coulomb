@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the library and runs the full test suite with GCC 11 (Ubuntu 22.04)
+# and the compiler of the latest Ubuntu runner, then builds the benchmark.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compiler
+        run: gcc --version
+
+      - name: Build and test
+        run: make test
+
+      - name: Build the benchmark
+        run: make tests/benchmark_fsc

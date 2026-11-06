@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file, and cite Cavalcante et al. (2018) for the method."
+type: software
+title: "Fast Screened Coulomb"
+abstract: "C library that computes screened interaction potentials between charge carriers in layered dielectric (van der Waals) systems with the electrostatic transfer-matrix method, and fits them with fast expansions for use in inner loops."
+version: "0.1.0"
+date-released: "2026-11-06"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/ItaloAlb/fast-screened-coulomb"
+authors:
+  - given-names: "Italo Carneiro"
+    family-names: "Albuquerque"
+    orcid: "https://orcid.org/0009-0007-3550-1787"
+    affiliation: "Universidade Federal do Ceará (UFC)"
+keywords:
+  - "screened Coulomb interaction"
+  - "van der Waals heterostructures"
+  - "electrostatic transfer matrix"
+  - "excitons"
+  - "dielectric screening"
+references:
+  - type: article
+    title: "Electrostatics of electron-hole interactions in van der Waals heterostructures"
+    authors:
+      - family-names: "Cavalcante"
+        given-names: "L. S. R."
+      - family-names: "Chaves"
+        given-names: "A."
+      - family-names: "Van Duppen"
+        given-names: "B."
+      - family-names: "Peeters"
+        given-names: "F. M."
+      - family-names: "Reichman"
+        given-names: "D. R."
+    journal: "Physical Review B"
+    volume: 97
+    issue: 12
+    start: 125427
+    year: 2018
+    doi: "10.1103/PhysRevB.97.125427"

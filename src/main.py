@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Screened Coulomb interaction in a layered dielectric system.
 

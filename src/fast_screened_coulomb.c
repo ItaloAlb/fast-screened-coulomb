@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Fast Screened Coulomb Authors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /* fast_screened_coulomb.c — Implementation
  *
  * Electrostatic Transfer Matrix (ETM) method for screened electron-hole
